@@ -11,7 +11,7 @@ from rptest.clients.kafka_cli_tools import KafkaCliTools
 from rptest.clients.types import TopicSpec
 from rptest.services.action_injector import random_process_kills
 from rptest.services.cluster import cluster
-from rptest.services.redpanda import RedpandaService, RESTART_LOG_ALLOW_LIST
+from rptest.services.redpanda import RedpandaService, CHAOS_LOG_ALLOW_LIST
 from rptest.services.redpanda import SISettings
 from rptest.tests.end_to_end import EndToEndTest
 from rptest.util import Scale
@@ -100,11 +100,11 @@ class EndToEndShadowIndexingTest(EndToEndShadowIndexingBase):
         self.run_validation()
 
 
-class EndToEndShadowIndexingTestWithFailures(EndToEndShadowIndexingBase):
+class EndToEndShadowIndexingTestWithDisruptions(EndToEndShadowIndexingBase):
     override_default_topic_replication = EndToEndShadowIndexingBase.num_brokers
 
     @cluster(num_nodes=5,
-             log_allow_list=RESTART_LOG_ALLOW_LIST,
+             log_allow_list=CHAOS_LOG_ALLOW_LIST,
              allow_missing_process=True)
     def test_write_with_node_failures(self):
         self.start_producer()
@@ -123,7 +123,7 @@ class EndToEndShadowIndexingTestWithFailures(EndToEndShadowIndexingBase):
             },
         )
 
-        with random_process_kills(self.redpanda):
+        with random_process_kills(self.redpanda) as ctx:
             wait_for_segments_removal(redpanda=self.redpanda,
                                       topic=self.topic,
                                       partition_idx=0,
@@ -131,6 +131,14 @@ class EndToEndShadowIndexingTestWithFailures(EndToEndShadowIndexingBase):
             self.start_consumer()
             self.run_validation()
 
-            # at least one node should have had the redpanda process killed off
-            assert any(not self.redpanda.pids(node)
-                       for node in self.redpanda.nodes)
+        action_log = ctx.action_log()
+        assert action_log
+
+        # At least one process kill action is present
+        assert action_log[0].is_reverse_action is False
+
+        # If there was another action after process kill, it was revival,
+        # because we are running in reverse after action mode
+        if len(action_log) > 1:
+            assert action_log[1].is_reverse_action and action_log[
+                1].node == action_log[0].node
