@@ -26,7 +26,6 @@ class EndToEndShadowIndexingBase(EndToEndTest):
     s3_topic_name = "panda-topic"
 
     num_brokers = 3
-    override_default_topic_replication = None
 
     topics = (TopicSpec(
         name=s3_topic_name,
@@ -34,35 +33,36 @@ class EndToEndShadowIndexingBase(EndToEndTest):
         replication_factor=3,
     ), )
 
+    def _build_redpanda_instance(self):
+        return RedpandaService(
+            context=self.test_context,
+            num_brokers=self.num_brokers,
+            si_settings=self.si_settings,
+        )
+
+    def _build_kafka_tools(self):
+        return KafkaCliTools(self.redpanda)
+
     def __init__(self, test_context):
         super(EndToEndShadowIndexingBase,
               self).__init__(test_context=test_context)
 
+        self.test_context = test_context
         self.topic = EndToEndShadowIndexingTest.s3_topic_name
 
-        si_settings = SISettings(
+        self.si_settings = SISettings(
             cloud_storage_reconciliation_interval_ms=500,
             cloud_storage_max_connections=5,
             log_segment_size=EndToEndShadowIndexingTest.segment_size,  # 1MB
         )
-        self.s3_bucket_name = si_settings.cloud_storage_bucket
-
-        si_settings.load_context(self.logger, test_context)
-
-        if self.override_default_topic_replication:
-            self._extra_rp_conf[
-                'default_topic_replications'] = self.override_default_topic_replication
-
+        self.s3_bucket_name = self.si_settings.cloud_storage_bucket
+        self.si_settings.load_context(self.logger, test_context)
         self.scale = Scale(test_context)
-        self.redpanda = RedpandaService(
-            context=test_context,
-            num_brokers=self.num_brokers,
-            si_settings=si_settings,
-        )
-
-        self.kafka_tools = KafkaCliTools(self.redpanda)
+        self.kafka_tools = None
 
     def setUp(self):
+        self.redpanda = self._build_redpanda_instance()
+        self.kafka_tools = self._build_kafka_tools()
         self.redpanda.start()
         for topic in EndToEndShadowIndexingBase.topics:
             self.kafka_tools.create_topic(topic)
@@ -101,7 +101,14 @@ class EndToEndShadowIndexingTest(EndToEndShadowIndexingBase):
 
 
 class EndToEndShadowIndexingTestWithDisruptions(EndToEndShadowIndexingBase):
-    override_default_topic_replication = EndToEndShadowIndexingBase.num_brokers
+    def _build_redpanda_instance(self):
+        return RedpandaService(context=self.test_context,
+                               num_brokers=self.num_brokers,
+                               si_settings=self.si_settings,
+                               extra_rp_conf={
+                                   'default_topic_replications':
+                                   self.num_brokers,
+                               })
 
     @cluster(num_nodes=5,
              log_allow_list=CHAOS_LOG_ALLOW_LIST,

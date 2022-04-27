@@ -60,7 +60,6 @@ class DisruptiveAction:
     The action can be reversible, it also stores the set of affected nodes and the last node
     the action was applied on.
     """
-
     def __init__(self, redpanda: RedpandaService, config: ActionConfig,
                  admin: Admin):
         self.admin = admin
@@ -121,16 +120,19 @@ class DisruptiveAction:
         Optionally restore state when the action injector thread is ending.
         Uses the action log to determine what restoration should be done.
         """
+
+        self.redpanda.logger.warn(action_log)
         all_nodes = {entry.node for entry in action_log}
 
-        nodes_where_action_reversed = defaultdict(lambda: False)
+        node_final_state = defaultdict(lambda: False)
         for entry in action_log:
-            nodes_where_action_reversed[entry.node] = entry.is_reverse_action
+            node_final_state[entry.node] = entry.is_reverse_action
 
-        nodes_to_restore = all_nodes - {
-            node for node, is_reversed in nodes_where_action_reversed.items()
-            if not is_reversed
+        nodes_where_action_reversed = {
+            node
+            for node, is_reversed in node_final_state.items() if is_reversed
         }
+        nodes_to_restore = all_nodes - nodes_where_action_reversed
 
         hostnames = {node.account.hostname for node in nodes_to_restore}
         self.redpanda.logger.info(f'Restoring state on {hostnames}')
@@ -176,11 +178,11 @@ class NodeDecommission(DisruptiveAction):
 
 class LeadershipTransfer(DisruptiveAction):
     def __init__(
-            self,
-            redpanda: RedpandaService,
-            config: ActionConfig,
-            admin: Admin,
-            topics: List[TopicSpec],
+        self,
+        redpanda: RedpandaService,
+        config: ActionConfig,
+        admin: Admin,
+        topics: List[TopicSpec],
     ):
         super().__init__(redpanda, config, admin)
         self.topics = topics
@@ -261,15 +263,15 @@ class ProcessKill(DisruptiveAction):
 
 class ActionInjectorThread(Thread):
     def __init__(
-            self,
-            config: ActionConfig,
-            redpanda: RedpandaService,
-            action: DisruptiveAction,
-            *args,
-            **kwargs,
+        self,
+        config: ActionConfig,
+        redpanda: RedpandaService,
+        disruptive_action: DisruptiveAction,
+        *args,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.action = action
+        self.disruptive_action = disruptive_action
         self.redpanda = redpanda
         self.config = config
         self._stop_requested = Event()
@@ -283,11 +285,11 @@ class ActionInjectorThread(Thread):
 
         while not self._stop_requested.is_set():
             if self.config.reverse_action_on_next_cycle:
-                result = self.action.reverse()
+                result = self.disruptive_action.reverse()
                 if result:
                     self.action_log.append(
                         ActionLogEntry(result, is_reverse_action=True))
-            result = self.action.action()
+            result = self.disruptive_action.action()
             if result:
                 self.action_log.append(
                     ActionLogEntry(result, is_reverse_action=False))
@@ -295,7 +297,7 @@ class ActionInjectorThread(Thread):
 
         if self.config.restore_state_on_exit:
             self.redpanda.logger.info('attempting to restore system state')
-            self.action.restore_state_on_exit(self.action_log)
+            self.disruptive_action.restore_state_on_exit(self.action_log)
 
     def stop(self):
         self._stop_requested.set()
@@ -342,9 +344,7 @@ def create_context_with_defaults(redpanda: RedpandaService,
 
 def random_process_kills(redpanda: RedpandaService,
                          config: ActionConfig = None) -> ActionCtx:
-    return create_context_with_defaults(redpanda,
-                                        ProcessKill,
-                                        config=config)
+    return create_context_with_defaults(redpanda, ProcessKill, config=config)
 
 
 def random_decommissions(redpanda: RedpandaService,
