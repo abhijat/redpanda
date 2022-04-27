@@ -119,17 +119,15 @@ class DisruptiveAction:
         Optionally restore state when the action injector thread is ending.
         Uses the action log to determine what restoration should be done.
         """
-        all_nodes = {entry.node for entry in action_log}
-
         node_final_state = defaultdict(lambda: False)
         for entry in action_log:
             node_final_state[entry.node] = entry.is_reverse_action
 
-        nodes_where_action_reversed = {
+        nodes_to_restore = {
             node
-            for node, is_reversed in node_final_state.items() if is_reversed
+            for node, is_reversed in node_final_state.items()
+            if not is_reversed
         }
-        nodes_to_restore = all_nodes - nodes_where_action_reversed
 
         hostnames = {node.account.hostname for node in nodes_to_restore}
         self.redpanda.logger.info(f'Restoring state on {hostnames}')
