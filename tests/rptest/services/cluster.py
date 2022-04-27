@@ -13,7 +13,7 @@ from ducktape.mark._mark import Mark
 from ducktape.mark.resource import ClusterUseMetadata
 
 
-def cluster(log_allow_list=None, allow_missing_process=False, **kwargs):
+def cluster(log_allow_list=None, **kwargs):
     """
     Drop-in replacement for Ducktape `cluster` that imposes additional
     redpanda-specific checks and defaults.
@@ -35,8 +35,7 @@ def cluster(log_allow_list=None, allow_missing_process=False, **kwargs):
                 r = f(self, *args, **kwargs)
             except:
                 self.redpanda.decode_backtraces()
-                self.redpanda.raise_on_crash(
-                    allow_missing_process=allow_missing_process)
+                self.redpanda.raise_on_crash()
                 raise
             else:
                 # Only do log inspections on tests that are otherwise

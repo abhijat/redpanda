@@ -886,7 +886,7 @@ class RedpandaService(Service):
         assert node in self._started
         return node.account.monitor_log(RedpandaService.STDOUT_STDERR_CAPTURE)
 
-    def raise_on_crash(self, allow_missing_process=False):
+    def raise_on_crash(self):
         """
         Check if any redpanda nodes are unexpectedly not running,
         or if any logs contain segfaults or assertions.
@@ -911,7 +911,7 @@ class RedpandaService(Service):
             if crash_log:
                 crashes.append((node, line))
 
-        if not crashes and not allow_missing_process:
+        if not crashes:
             # Even if there is no assertion or segfault, look for unexpectedly
             # not-running processes
             for node in self._started:

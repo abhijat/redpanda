@@ -102,17 +102,17 @@ class EndToEndShadowIndexingTest(EndToEndShadowIndexingBase):
 
 class EndToEndShadowIndexingTestWithDisruptions(EndToEndShadowIndexingBase):
     def _build_redpanda_instance(self):
-        return RedpandaService(context=self.test_context,
-                               num_brokers=self.num_brokers,
-                               si_settings=self.si_settings,
-                               extra_rp_conf={
-                                   'default_topic_replications':
-                                   self.num_brokers,
-                               })
+        return RedpandaService(
+            context=self.test_context,
+            num_brokers=self.num_brokers,
+            si_settings=self.si_settings,
+            # With node failures we require __consumer_offsets to be replicated
+            # to survive leader crash
+            extra_rp_conf={
+                'default_topic_replications': self.num_brokers,
+            })
 
-    @cluster(num_nodes=5,
-             log_allow_list=CHAOS_LOG_ALLOW_LIST,
-             allow_missing_process=True)
+    @cluster(num_nodes=5, log_allow_list=CHAOS_LOG_ALLOW_LIST)
     def test_write_with_node_failures(self):
         self.start_producer()
         produce_until_segments(

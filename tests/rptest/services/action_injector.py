@@ -71,9 +71,8 @@ class DisruptiveAction:
 
     def max_affected_nodes_reached(self) -> bool:
         """
-        Checks if the number of affected nodes equals the maximum number of nodes
-        this action is allowed to affect. If so the next calls to action will return
-        early.
+        Checks if the number of affected nodes so far equals the maximum number of nodes
+        this action is allowed to affect. If so all future calls to action will be no-op.
         """
         raise NotImplementedError
 
@@ -94,7 +93,7 @@ class DisruptiveAction:
 
     def do_action(self) -> ClusterNode:
         """
-        Applies the disruptive action, returns node the action was applied on
+        Applies the disruptive action, returns node or entity the action was applied on
         """
         raise NotImplementedError
 
@@ -104,7 +103,7 @@ class DisruptiveAction:
 
     def do_reverse_action(self) -> ClusterNode:
         """
-        Reverses the last applied action
+        Reverses the last applied action if applicable.
         """
         raise NotImplementedError
 
@@ -120,8 +119,6 @@ class DisruptiveAction:
         Optionally restore state when the action injector thread is ending.
         Uses the action log to determine what restoration should be done.
         """
-
-        self.redpanda.logger.warn(action_log)
         all_nodes = {entry.node for entry in action_log}
 
         node_final_state = defaultdict(lambda: False)
