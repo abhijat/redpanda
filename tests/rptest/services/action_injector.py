@@ -137,40 +137,16 @@ class DisruptiveAction:
 
 
 class NodeDecommission(DisruptiveAction):
+    def __init__(
+        self,
+        redpanda: RedpandaService,
+        config: ActionConfig,
+        admin: Admin,
+    ):
+        super().__init__(redpanda, config, admin)
+
     def max_affected_nodes_reached(self):
         return len(self.affected_nodes) >= self.config.max_affected_nodes
-
-    def do_action(self) -> ClusterNode:
-        brokers = self.admin.get_brokers()
-        node_to_decommission = random.choice(brokers)
-
-        broker_id = node_to_decommission['node_id']
-        self.redpanda.logger.warn(f'going to decom broker id {broker_id}')
-        self.admin.decommission_broker(id=node_to_decommission['node_id'])
-
-        def done():
-            return broker_id not in {
-                b['node_id']
-                for b in self.admin.get_brokers()
-            }
-
-        wait_until(done,
-                   timeout_sec=120,
-                   backoff_sec=2,
-                   err_msg=f'Failed to decommission broker id {broker_id}')
-        self.affected_nodes.add(broker_id)
-        self.last_affected_node = broker_id
-        return self.last_affected_node
-
-    def do_reverse_action(self) -> ClusterNode:
-        self.admin.recommission_broker(self.last_affected_node)
-        self.affected_nodes.remove(self.last_affected_node)
-
-        last_affected_node, self.last_affected_node = self.last_affected_node, None
-        return last_affected_node
-
-    def do_restore_nodes(self, nodes_to_restore: Set[ClusterNode]):
-        pass
 
 
 class LeadershipTransfer(DisruptiveAction):
@@ -187,32 +163,6 @@ class LeadershipTransfer(DisruptiveAction):
 
     def max_affected_nodes_reached(self):
         return False
-
-    def do_action(self):
-        for topic in self.topics:
-            for partition in range(topic.partition_count):
-                old_leader = self.admin.get_partition_leader(
-                    namespace='kafka', topic=topic, partition=partition)
-                self.admin.transfer_leadership_to(namespace='kafka',
-                                                  topic=topic,
-                                                  partition=partition,
-                                                  target=None)
-
-                def leader_is_changed():
-                    new_leader = self.admin.get_partition_leader(
-                        namespace='kafka', topic=topic, partition=partition)
-                    return new_leader != -1 and new_leader != old_leader
-
-                wait_until(leader_is_changed,
-                           timeout_sec=30,
-                           backoff_sec=2,
-                           err_msg='Leadership transfer failed')
-
-    def do_reverse_action(self):
-        raise NotImplementedError('Leadership transfer is not reversible')
-
-    def do_restore_nodes(self, nodes_to_restore: Set[ClusterNode]):
-        pass
 
 
 class ProcessKill(DisruptiveAction):
