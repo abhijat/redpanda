@@ -31,10 +31,6 @@ class ActionConfig:
     min_time_between_actions_sec: float
     max_time_between_actions_sec: float
 
-    # if set, the action injector thread will reverse the last applied action
-    # before injecting the next action
-    reverse_action_on_next_cycle: bool = False
-
     # if set, the action will not be applied after this count of nodes has been affected
     # subsequent calls to action will not do anything for the lifetime of the action injector thread.
     max_affected_nodes: Optional[int] = None
@@ -134,36 +130,10 @@ class DisruptiveAction:
         self.do_restore_nodes(nodes_to_restore)
 
 
-class NodeDecommission(DisruptiveAction):
-    def __init__(
-        self,
-        redpanda: RedpandaService,
-        config: ActionConfig,
-        admin: Admin,
-    ):
-        super().__init__(redpanda, config, admin)
-
-    def max_affected_nodes_reached(self):
-        return len(self.affected_nodes) >= self.config.max_affected_nodes
-
-
-class LeadershipTransfer(DisruptiveAction):
-    def __init__(
-        self,
-        redpanda: RedpandaService,
-        config: ActionConfig,
-        admin: Admin,
-        topics: List[TopicSpec],
-    ):
-        super().__init__(redpanda, config, admin)
-        self.topics = topics
-        self.is_reversible = False
-
-    def max_affected_nodes_reached(self):
-        return False
-
-
 class ProcessKill(DisruptiveAction):
+    PROCESS_START_WAIT_SEC = 20
+    PROCESS_START_WAIT_BACKOFF = 2
+
     def __init__(self, redpanda: RedpandaService, config: ActionConfig,
                  admin: Admin):
         super(ProcessKill, self).__init__(redpanda, config, admin)
@@ -191,7 +161,7 @@ class ProcessKill(DisruptiveAction):
             self.redpanda.logger.warn(f'no usable node')
 
     def do_reverse_action(self):
-        self.failure_injector._start(self.last_affected_node)
+        self._start_rp(node=self.last_affected_node)
         self.affected_nodes.remove(self.last_affected_node)
         self.redpanda.add_to_started_nodes(self.last_affected_node)
 
@@ -203,7 +173,16 @@ class ProcessKill(DisruptiveAction):
         Attempt to restore the redpanda process on all nodes where it was stopped.
         """
         for node in nodes_to_restore:
-            self.failure_injector._start(node)
+            self._start_rp(node)
+
+    def _start_rp(self, node):
+        self.failure_injector._start(node)
+        wait_until(
+            lambda: self.redpanda.redpanda_pid(node),
+            timeout_sec=self.PROCESS_START_WAIT_SEC,
+            backoff_sec=self.PROCESS_START_WAIT_BACKOFF,
+            err_msg=
+            f'Failed to start redpanda process on {node.account.hostname}')
 
 
 class ActionInjectorThread(Thread):
@@ -223,22 +202,31 @@ class ActionInjectorThread(Thread):
         self.action_log = []
 
     def run(self):
-        wait_until(lambda: self.redpanda.healthy(),
+        admin = Admin(self.redpanda)
+
+        def all_nodes_started():
+            statuses = [
+                admin.ready(node).get("status") for node in self.redpanda.nodes
+            ]
+            return all(status == 'ready' for status in statuses)
+
+        wait_until(all_nodes_started,
                    timeout_sec=self.config.cluster_start_lead_time_sec,
                    backoff_sec=2,
                    err_msg=f'Cluster not ready to begin actions')
 
+        self.redpanda.logger.info('cluster is ready, starting action loop')
+
         while not self._stop_requested.is_set():
-            if self.config.reverse_action_on_next_cycle:
-                result = self.disruptive_action.reverse()
-                if result:
-                    self.action_log.append(
-                        ActionLogEntry(result, is_reverse_action=True))
-            result = self.disruptive_action.action()
-            if result:
+            if result := self.disruptive_action.action():
                 self.action_log.append(
                     ActionLogEntry(result, is_reverse_action=False))
+
             time.sleep(self.config.time_between_actions())
+
+            if result := self.disruptive_action.reverse():
+                self.action_log.append(
+                    ActionLogEntry(result, is_reverse_action=True))
 
         if self.config.restore_state_on_exit:
             self.redpanda.logger.info('attempting to restore system state')
@@ -281,7 +269,6 @@ def create_context_with_defaults(redpanda: RedpandaService,
         cluster_start_lead_time_sec=20,
         min_time_between_actions_sec=10,
         max_time_between_actions_sec=30,
-        reverse_action_on_next_cycle=True,
     )
     return ActionCtx(config, redpanda,
                      op_type(redpanda, config, admin, *args, **kwargs))
@@ -290,19 +277,3 @@ def create_context_with_defaults(redpanda: RedpandaService,
 def random_process_kills(redpanda: RedpandaService,
                          config: ActionConfig = None) -> ActionCtx:
     return create_context_with_defaults(redpanda, ProcessKill, config=config)
-
-
-def random_decommissions(redpanda: RedpandaService,
-                         config: ActionConfig = None) -> ActionCtx:
-    return create_context_with_defaults(redpanda,
-                                        NodeDecommission,
-                                        config=config)
-
-
-def random_leadership_transfers(redpanda: RedpandaService,
-                                topics,
-                                config: ActionConfig = None) -> ActionCtx:
-    return create_context_with_defaults(redpanda,
-                                        LeadershipTransfer,
-                                        topics,
-                                        config=config)

@@ -33,17 +33,7 @@ class EndToEndShadowIndexingBase(EndToEndTest):
         replication_factor=3,
     ), )
 
-    def _build_redpanda_instance(self):
-        return RedpandaService(
-            context=self.test_context,
-            num_brokers=self.num_brokers,
-            si_settings=self.si_settings,
-        )
-
-    def _build_kafka_tools(self):
-        return KafkaCliTools(self.redpanda)
-
-    def __init__(self, test_context):
+    def __init__(self, test_context, extra_rp_conf=None):
         super(EndToEndShadowIndexingBase,
               self).__init__(test_context=test_context)
 
@@ -58,11 +48,14 @@ class EndToEndShadowIndexingBase(EndToEndTest):
         self.s3_bucket_name = self.si_settings.cloud_storage_bucket
         self.si_settings.load_context(self.logger, test_context)
         self.scale = Scale(test_context)
-        self.kafka_tools = None
+
+        self.redpanda = RedpandaService(context=self.test_context,
+                                        num_brokers=self.num_brokers,
+                                        si_settings=self.si_settings,
+                                        extra_rp_conf=extra_rp_conf)
+        self.kafka_tools = KafkaCliTools(self.redpanda)
 
     def setUp(self):
-        self.redpanda = self._build_redpanda_instance()
-        self.kafka_tools = self._build_kafka_tools()
         self.redpanda.start()
         for topic in EndToEndShadowIndexingBase.topics:
             self.kafka_tools.create_topic(topic)
@@ -101,16 +94,11 @@ class EndToEndShadowIndexingTest(EndToEndShadowIndexingBase):
 
 
 class EndToEndShadowIndexingTestWithDisruptions(EndToEndShadowIndexingBase):
-    def _build_redpanda_instance(self):
-        return RedpandaService(
-            context=self.test_context,
-            num_brokers=self.num_brokers,
-            si_settings=self.si_settings,
-            # With node failures we require __consumer_offsets to be replicated
-            # to survive leader crash
-            extra_rp_conf={
-                'default_topic_replications': self.num_brokers,
-            })
+    def __init__(self, test_context):
+        super().__init__(test_context,
+                         extra_rp_conf={
+                             'default_topic_replications': self.num_brokers,
+                         })
 
     @cluster(num_nodes=5, log_allow_list=CHAOS_LOG_ALLOW_LIST)
     def test_write_with_node_failures(self):

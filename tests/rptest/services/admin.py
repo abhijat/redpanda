@@ -419,14 +419,6 @@ class Admin:
         self.redpanda.logger.debug(f"decommissioning {path}")
         return self._request('put', path, node=node)
 
-    def recommission_broker(self, broker_id, node=None):
-        """
-        Recommission broker
-        """
-        path = f"brokers/{broker_id}/recommission"
-        self.redpanda.logger.debug(f"recommissioning {path}")
-        return self._request('put', path, node=node)
-
     def get_partitions(self,
                        topic=None,
                        partition=None,
