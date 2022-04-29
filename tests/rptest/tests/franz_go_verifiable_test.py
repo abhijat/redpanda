@@ -6,7 +6,7 @@
 # As of the Change Date specified in that file, in accordance with
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0
-
+from rptest.services.action_injector import random_process_kills, ActionConfig
 from rptest.services.cluster import cluster
 from ducktape.utils.util import wait_until
 from ducktape.cluster.cluster_spec import ClusterSpec
@@ -16,8 +16,9 @@ import os
 from rptest.clients.rpk import RpkTool
 from rptest.clients.types import TopicSpec
 from rptest.tests.redpanda_test import RedpandaTest
-from rptest.services.redpanda import SISettings
+from rptest.services.redpanda import SISettings, CHAOS_LOG_ALLOW_LIST
 from rptest.services.franz_go_verifiable_services import FranzGoVerifiableProducer, FranzGoVerifiableSeqConsumer, FranzGoVerifiableRandomConsumer
+from rptest.tests.topic_recovery_test import TRANSIENT_ERRORS
 
 
 class FranzGoVerifiableBase(RedpandaTest):
@@ -113,9 +114,9 @@ class FranzGoVerifiableTest(FranzGoVerifiableBase):
 
 
 class FranzGoVerifiableWithSiTest(FranzGoVerifiableBase):
-    MSG_SIZE = 1000000
-    PRODUCE_COUNT = 20000
-    RANDOM_READ_COUNT = 1000
+    MSG_SIZE = 5000
+    PRODUCE_COUNT = 100000
+    RANDOM_READ_COUNT = 5000
     RANDOM_READ_PARALLEL = 20
 
     segment_size = 5 * 1000000
@@ -144,6 +145,7 @@ class FranzGoVerifiableWithSiTest(FranzGoVerifiableBase):
                 # intervals
                 'election_timeout_ms': 5000,
                 'raft_heartbeat_interval_ms': 500,
+                "default_topic_replications": 3,
             },
             si_settings=si_settings)
 
@@ -192,6 +194,63 @@ class FranzGoVerifiableWithSiTest(FranzGoVerifiableBase):
         self._rand_consumer.shutdown()
         self._seq_consumer.wait()
         self._rand_consumer.wait()
+
+        assert self._seq_consumer.consumer_status.valid_reads >= wrote_at_least
+        assert self._rand_consumer.consumer_status.total_reads == self.RANDOM_READ_COUNT * self.RANDOM_READ_PARALLEL
+
+    @cluster(num_nodes=4, log_allow_list=CHAOS_LOG_ALLOW_LIST + TRANSIENT_ERRORS)
+    def test_with_random_process_kills(self):
+        self.logger.info(f"Environment: {os.environ}")
+        if os.environ.get('BUILD_TYPE', None) == 'debug':
+            self.logger.info(
+                "Skipping test in debug mode (requires release build)")
+            return
+
+        restart_config = ActionConfig(
+            cluster_start_lead_time_sec=10,
+            min_time_between_actions_sec=10,
+            max_time_between_actions_sec=11,
+        )
+        with random_process_kills(self.redpanda, restart_config):
+            rpk = RpkTool(self.redpanda)
+            rpk.alter_topic_config(self.topic, 'redpanda.remote.write', 'true')
+            rpk.alter_topic_config(self.topic, 'redpanda.remote.read', 'true')
+            rpk.alter_topic_config(self.topic, 'retention.bytes',
+                                   str(self.segment_size))
+
+            self._producer.start(clean=False)
+
+            # Don't start consumers until the producer has written out its first
+            # checkpoint with valid ranges.
+            wait_until(lambda: self._producer.produce_status.acked > 0,
+                       timeout_sec=60,
+                       backoff_sec=5.0,
+                       err_msg='Failed to ack any messages')
+
+            # nce we've written a lot of data, check that some of it showed up in S3
+            wait_until(lambda: self._producer.produce_status.acked > self.PRODUCE_COUNT // 2,
+                       timeout_sec=300,
+                       backoff_sec=5,
+                       err_msg=f'Failed to ack {self.PRODUCE_COUNT // 2} messages')
+            objects = list(self.redpanda.get_objects_from_si())
+            assert len(objects) > 0
+            for o in objects:
+                self.logger.info(f"S3 object: {o.Key}, {o.ContentLength}")
+
+            wrote_at_least = self._producer.produce_status.acked
+            self._seq_consumer.start(clean=False)
+            self._rand_consumer.start(clean=False)
+
+            # Wait until we have written all the data we expected to write
+            self._producer.wait()
+            assert self._producer.produce_status.acked >= self.PRODUCE_COUNT
+
+            # Wait for last iteration of consumers to finish: if they are currently
+            # mid-run, they'll run to completion.
+            self._seq_consumer.shutdown()
+            self._rand_consumer.shutdown()
+            self._seq_consumer.wait(timeout_sec=900)
+            self._rand_consumer.wait(timeout_sec=900)
 
         assert self._seq_consumer.consumer_status.valid_reads >= wrote_at_least
         assert self._rand_consumer.consumer_status.total_reads == self.RANDOM_READ_COUNT * self.RANDOM_READ_PARALLEL
