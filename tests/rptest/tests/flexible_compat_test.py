@@ -54,13 +54,19 @@ class FlexibleCompatTest(RedpandaTest):
         super(FlexibleCompatTest, self).__init__(test_context=test_context)
         self._client = KafkaCliTools(self.redpanda)
 
+    @staticmethod
+    def remove_suffix(s: str, suffix: str) -> str:
+        if s.endswith(suffix):
+            return s[:-len(suffix)]
+        return s
+
     def _query_api_versions(self):
         output = self._client.get_api_versions()
         self.redpanda.logger.info(output)
 
         # sanitize output
         def trim_and_parse(x):
-            line = parse_api_versions_response(x.removesuffix(',').strip())
+            line = parse_api_versions_response(self.remove_suffix(x, ',').strip())
             return None if line is None else ApiVersionResponseParser(line)
 
         output = [trim_and_parse(x) for x in output.split('\n')]

@@ -1508,9 +1508,14 @@ if __name__ == "__main__":
     # request id
     api_key = msg["apiKey"]
 
+    def remove_suffix(n: str, suffix: str) -> str:
+        if n.endswith(suffix):
+            return n[:-len(suffix)]
+        return n
+
     def parse_name(name):
-        name = name.removesuffix("Request")
-        name = name.removesuffix("Response")
+        name = remove_suffix(name, 'Request')
+        name = remove_suffix(name, 'Response')
         name = snake_case(name)
         # Special case to sidestep an otherwise large rename in the source
         return "list_offsets" if name == "list_offset" else name
