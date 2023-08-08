@@ -49,7 +49,11 @@ private:
     ss::future<> load_stream_for_chunk(chunk_start_offset_t chunk_start);
 
     ss::future<> maybe_close_stream();
-    ss::future<> load_chunk_handle(chunk_start_offset_t chunk_start);
+    ss::future<> load_chunk_handle(
+      chunk_start_offset_t chunk_start,
+      eager_stream_t eager_stream = std::nullopt);
+
+    ss::future<> skip_stream_to(uint64_t begin);
 
     segment_chunks& _chunks;
     remote_segment& _segment;
@@ -70,6 +74,14 @@ private:
     retry_chain_node _rtc;
     retry_chain_logger _ctxlog;
     std::optional<uint16_t> _prefetch_override;
+
+    enum class stream_type {
+        disk,
+        download,
+    };
+
+    stream_type _current_stream_t;
+    chunk_start_offset_t _last_download_end;
 };
 
 } // namespace cloud_storage
