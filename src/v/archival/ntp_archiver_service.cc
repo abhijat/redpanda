@@ -1455,10 +1455,10 @@ ntp_archiver::schedule_single_upload(const upload_context& upload_ctx) {
 
     auto log = _parent.log();
 
-    upload_candidate_with_locks upload_with_locks;
+    candidate_creation_result creation_result;
     switch (upload_ctx.upload_kind) {
     case segment_upload_kind::non_compacted:
-        upload_with_locks = co_await _policy.get_next_candidate(
+        creation_result = co_await _policy.get_next_candidate(
           start_upload_offset,
           last_stable_offset,
           log,
@@ -1467,43 +1467,19 @@ ntp_archiver::schedule_single_upload(const upload_context& upload_ctx) {
         break;
     case segment_upload_kind::compacted:
         const auto& m = manifest();
-        upload_with_locks = co_await _policy.get_next_compacted_segment(
+        creation_result = co_await _policy.get_next_compacted_segment(
           start_upload_offset, log, m, _conf->segment_upload_timeout);
         break;
     }
 
-    auto upload = upload_with_locks.candidate;
-    auto locks = std::move(upload_with_locks.read_locks);
-
-    if (
-      upload.sources.empty()
-      && upload_ctx.upload_kind == segment_upload_kind::compacted
-      && model::offset{} != upload.final_offset) {
-        vlog(
-          _rtclog.warn,
-          "Upload skipped for range: {}-{} because these offsets lie inside "
-          "batches or the reupload is not smaller than the current segment",
-          upload.starting_offset,
-          upload.final_offset);
-        co_return scheduled_upload{
-          .result = std::nullopt,
-          .inclusive_last_offset = upload.final_offset,
-          .meta = std::nullopt,
-          .name = std::nullopt,
-          .delta = std::nullopt,
-          .stop = ss::stop_iteration::yes,
-          .upload_kind = upload_ctx.upload_kind,
-        };
-    }
-
-    if (upload.sources.empty()) {
-        vlog(
-          _rtclog.debug,
-          "upload candidate not found, start_upload_offset: {}, "
-          "last_stable_offset: {}",
-          start_upload_offset,
-          last_stable_offset);
-        // Indicate that the upload is not started
+    if (const auto* error = std::get_if<candidate_creation_error>(
+          &creation_result);
+        error) {
+        const auto log_level = log_level_for_error(*error);
+        vlogl(
+          _rtclog, log_level, "failed to make upload candidate: {}", *error);
+        // TODO : propagate the type to callers so we do not have to use empty
+        // scheduled uploads anywhere
         co_return scheduled_upload{
           .result = std::nullopt,
           .inclusive_last_offset = {},
@@ -1514,6 +1490,36 @@ ntp_archiver::schedule_single_upload(const upload_context& upload_ctx) {
           .upload_kind = upload_ctx.upload_kind,
         };
     }
+
+    if (const auto* skip_offsets = std::get_if<skip_offset_range>(
+          &creation_result);
+        skip_offsets) {
+        const auto log_level = log_level_for_error(skip_offsets->error);
+        vlogl(
+          _rtclog,
+          log_level,
+          "Failed to make upload candidate, skipping offset range: {}",
+          *skip_offsets);
+        co_return scheduled_upload{
+          .result = std::nullopt,
+          .inclusive_last_offset = skip_offsets->end,
+          .meta = std::nullopt,
+          .name = std::nullopt,
+          .delta = std::nullopt,
+          .stop = ss::stop_iteration::yes,
+          .upload_kind = upload_ctx.upload_kind,
+        };
+    }
+
+    vassert(
+      std::holds_alternative<upload_candidate_with_locks>(creation_result),
+      "Unexpected result from upload candidate creation");
+
+    auto candidate_with_locks = std::get<upload_candidate_with_locks>(
+      std::move(creation_result));
+
+    auto upload = candidate_with_locks.candidate;
+    auto locks = std::move(candidate_with_locks.read_locks);
 
     auto first_source = upload.sources.front();
     auto offset = upload.final_offset;
@@ -2785,24 +2791,41 @@ ntp_archiver::find_reupload_candidate(manifest_scanner_t scanner) {
           segment_collector_mode::collect_non_compacted);
         auto candidate = co_await collector.make_upload_candidate(
           _conf->upload_io_priority, _conf->segment_upload_timeout);
-        if (candidate.candidate.exposed_name().empty()) {
-            vlog(_rtclog.warn, "Failed to make upload candidate");
+        if (const auto* error = std::get_if<candidate_creation_error>(
+              &candidate);
+            error) {
+            vlog(_rtclog.warn, "Failed to make upload candidate: {}", *error);
             co_return std::make_pair(std::nullopt, std::nullopt);
         }
+
+        if (const auto* skip_offsets = std::get_if<skip_offset_range>(
+              &candidate);
+            skip_offsets) {
+            vlog(
+              _rtclog.warn,
+              "Failed to make upload candidate, skipping offsets: {}",
+              *skip_offsets);
+            co_return std::make_pair(std::nullopt, std::nullopt);
+        }
+
+        auto candidate_with_locks = std::get<upload_candidate_with_locks>(
+          std::move(candidate));
         if (
-          candidate.candidate.content_length != run->meta.size_bytes
-          || candidate.candidate.starting_offset != run->meta.base_offset
-          || candidate.candidate.final_offset != run->meta.committed_offset) {
+          candidate_with_locks.candidate.content_length != run->meta.size_bytes
+          || candidate_with_locks.candidate.starting_offset
+               != run->meta.base_offset
+          || candidate_with_locks.candidate.final_offset
+               != run->meta.committed_offset) {
             vlog(
               _rtclog.error,
               "Failed to make upload candidate to match the run, candidate: "
-              "{}, "
-              "run: {}",
-              candidate.candidate,
+              "{}, run: {}",
+              candidate_with_locks.candidate,
               run->meta);
             co_return std::make_pair(std::nullopt, std::nullopt);
         }
-        co_return std::make_pair(std::move(units), std::move(candidate));
+        co_return std::make_pair(
+          std::move(units), std::move(candidate_with_locks));
     }
     // segment_name exposed_name;
     upload_candidate candidate = {};

@@ -403,7 +403,7 @@ static ss::future<std::optional<std::error_code>> get_file_range(
 ///       a name '1000-1-v1.log'. If we were only able to find offset
 ///       990 instead of 1000, we will upload starting from it and
 ///       the name will be '990-1-v1.log'.
-static ss::future<upload_candidate_with_locks> create_upload_candidate(
+static ss::future<candidate_creation_result> create_upload_candidate(
   model::offset begin_inclusive,
   std::optional<model::offset> end_inclusive,
   ss::lw_shared_ptr<storage::segment> segment,
@@ -439,7 +439,8 @@ static ss::future<upload_candidate_with_locks> create_upload_candidate(
           archival_log.error,
           "Upload candidate not created, failed to get file range: {}",
           file_range_result.value().message());
-        co_return upload_candidate_with_locks{upload_candidate{}, {}};
+        co_return non_compacted_candidate_creation_error::
+          failed_to_get_file_range;
     }
     if (result->starting_offset != segment->offsets().base_offset) {
         // We need to generate new name for the segment
@@ -462,7 +463,7 @@ static ss::future<upload_candidate_with_locks> create_upload_candidate(
     co_return upload_candidate_with_locks{*result, std::move(locks)};
 }
 
-ss::future<upload_candidate_with_locks> archival_policy::get_next_candidate(
+ss::future<candidate_creation_result> archival_policy::get_next_candidate(
   model::offset begin_inclusive,
   model::offset end_exclusive,
   ss::shared_ptr<storage::log> log,
@@ -473,8 +474,13 @@ ss::future<upload_candidate_with_locks> archival_policy::get_next_candidate(
     auto adjusted_lso = end_exclusive - model::offset(1);
     auto [segment, ntp_conf, forced] = find_segment(
       begin_inclusive, adjusted_lso, std::move(log), ot_state);
-    if (segment.get() == nullptr || ntp_conf == nullptr) {
-        co_return upload_candidate_with_locks{upload_candidate{}, {}};
+    if (segment.get() == nullptr) {
+        co_return non_compacted_candidate_creation_error::
+          no_segment_for_begin_offset;
+    }
+
+    if (ntp_conf == nullptr) {
+        co_return non_compacted_candidate_creation_error::missing_ntp_config;
     }
     // We need to adjust LSO since it points to the first
     // recordbatch with uncommitted transactions data
@@ -494,13 +500,16 @@ ss::future<upload_candidate_with_locks> archival_policy::get_next_candidate(
       ntp_conf,
       _io_priority,
       segment_lock_duration);
-    if (upload.candidate.content_length == 0) {
-        co_return upload_candidate_with_locks{upload_candidate{}, {}};
+    if (const auto* u = std::get_if<upload_candidate_with_locks>(&upload); u) {
+        if (u->candidate.content_length == 0) {
+            co_return non_compacted_candidate_creation_error::
+              zero_content_length;
+        }
     }
     co_return upload;
 }
 
-ss::future<upload_candidate_with_locks>
+ss::future<candidate_creation_result>
 archival_policy::get_next_compacted_segment(
   model::offset begin_inclusive,
   ss::shared_ptr<storage::log> log,
@@ -511,7 +520,7 @@ archival_policy::get_next_compacted_segment(
           archival_log.warn,
           "Upload policy find next compacted segment: no segments ntp: {}",
           _ntp);
-        co_return upload_candidate_with_locks{upload_candidate{}, {}};
+        co_return compacted_candidate_creation_error::no_segments;
     }
     segment_collector compacted_segment_collector{
       begin_inclusive,
@@ -522,7 +531,8 @@ archival_policy::get_next_compacted_segment(
 
     compacted_segment_collector.collect_segments();
     if (!compacted_segment_collector.should_replace_manifest_segment()) {
-        co_return upload_candidate_with_locks{upload_candidate{}, {}};
+        co_return compacted_candidate_creation_error::
+          cannot_replace_manifest_entry;
     }
 
     co_return co_await compacted_segment_collector.make_upload_candidate(
