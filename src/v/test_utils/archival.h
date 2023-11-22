@@ -16,6 +16,8 @@
 #include "model/tests/random_batch.h"
 #include "storage/tests/utils/disk_log_builder.h"
 
+#include <boost/test/unit_test.hpp>
+
 inline ss::input_stream<char> make_manifest_stream(std::string_view json) {
     iobuf i;
     i.append(json.data(), json.size());
@@ -97,4 +99,62 @@ inline void populate_manifest(
            .delta_offset_end = model::offset_delta(
              spec.end_offset - spec.end_kafka_offset)});
     }
+}
+
+inline archival::upload_candidate_with_locks
+require_upload_candidate(archival::candidate_creation_result&& r) {
+    ss::visit(
+      r,
+      [](const archival::candidate_creation_error& err) {
+          BOOST_FAIL(fmt::format("unexpected creation error: {}", err));
+      },
+      [](const archival::skip_offset_range& r) {
+          BOOST_FAIL(fmt::format("unexpected skip offset range: {}", r.error));
+      },
+      [](const archival::upload_candidate_with_locks& c) {});
+    return std::move(std::get<archival::upload_candidate_with_locks>(r));
+}
+
+template<typename Err>
+inline void
+require_error_kind(archival::candidate_creation_error actual, Err expected) {
+    ss::visit(
+      actual,
+      [expected](const Err& e) { BOOST_REQUIRE_EQUAL(e, expected); },
+      [](const auto& e) {
+          BOOST_FAIL(fmt::format("unexpected error kind: {}", e));
+      });
+}
+
+template<typename Err>
+inline void require_candidate_creation_error(
+  archival::candidate_creation_result&& r, Err expected) {
+    ss::visit(
+      r,
+      [expected](const archival::candidate_creation_error& actual) {
+          require_error_kind(actual, expected);
+      },
+      [](const archival::skip_offset_range& r) {
+          BOOST_FAIL(fmt::format("unexpected skip offset range: {}", r));
+      },
+      [](const archival::upload_candidate_with_locks&) {
+          BOOST_FAIL("unexpected candidate created");
+      });
+}
+
+template<typename Err>
+inline void require_skip_offset(
+  archival::candidate_creation_result&& r, Err expected, model::offset final) {
+    ss::visit(
+      r,
+      [](const archival::candidate_creation_error& err) {
+          BOOST_FAIL(fmt::format("unexpected creation error: {}", err));
+      },
+      [expected, final](const archival::skip_offset_range& r) {
+          require_error_kind(r.error, expected);
+          BOOST_REQUIRE_EQUAL(r.end, final);
+      },
+      [](const archival::upload_candidate_with_locks&) {
+          BOOST_FAIL("unexpected candidate created");
+      });
 }
