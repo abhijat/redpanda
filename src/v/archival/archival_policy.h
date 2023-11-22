@@ -23,6 +23,34 @@
 
 namespace archival {
 
+enum class compacted_candidate_creation_error {
+    no_segments,
+    begin_offset_seek_error,
+    end_offset_seek_error,
+    offset_inside_batch,
+    upload_size_unchanged,
+    cannot_replace_manifest_entry,
+};
+
+std::ostream& operator<<(std::ostream&, compacted_candidate_creation_error);
+
+enum class non_compacted_candidate_creation_error {
+    no_segment_for_begin_offset,
+    missing_ntp_config,
+    failed_to_get_file_range,
+    zero_content_length,
+};
+
+std::ostream& operator<<(std::ostream&, non_compacted_candidate_creation_error);
+
+using candidate_creation_error = std::variant<
+  compacted_candidate_creation_error,
+  non_compacted_candidate_creation_error>;
+
+std::ostream& operator<<(std::ostream&, const candidate_creation_error&);
+
+ss::log_level log_level_for_error(const candidate_creation_error& error);
+
 struct upload_candidate {
     segment_name exposed_name;
     model::offset starting_offset;
@@ -43,6 +71,21 @@ struct upload_candidate_with_locks {
     upload_candidate candidate;
     std::vector<ss::rwlock::holder> read_locks;
 };
+
+/// Wraps an error with an offset range, so that no
+/// further upload candidates are created from this offset range.
+struct skip_offset_range {
+    model::offset begin;
+    model::offset end;
+    candidate_creation_error error;
+
+    friend std::ostream& operator<<(std::ostream&, const skip_offset_range&);
+};
+
+using candidate_creation_result = std::variant<
+  upload_candidate_with_locks,
+  skip_offset_range,
+  candidate_creation_error>;
 
 /// Archival policy is responsible for extracting segments from
 /// log_manager in right order.

@@ -87,6 +87,92 @@ std::ostream& operator<<(std::ostream& s, const upload_candidate& c) {
     return s;
 }
 
+std::ostream&
+operator<<(std::ostream& os, compacted_candidate_creation_error err) {
+    os << "compacted candidate creation error: ";
+    switch (err) {
+    case compacted_candidate_creation_error::no_segments:
+        return os << "no segments";
+    case compacted_candidate_creation_error::begin_offset_seek_error:
+        return os << "failed to seek begin offset";
+    case compacted_candidate_creation_error::end_offset_seek_error:
+        return os << "failed to seek end offset";
+    case compacted_candidate_creation_error::offset_inside_batch:
+        return os << "offset inside batch";
+    case compacted_candidate_creation_error::upload_size_unchanged:
+        return os << "size of candidate unchanged";
+    case compacted_candidate_creation_error::cannot_replace_manifest_entry:
+        return os << "candidate cannot replace manifest entry";
+    }
+}
+
+std::ostream&
+operator<<(std::ostream& os, non_compacted_candidate_creation_error err) {
+    os << "non compacted candidate creation error: ";
+    switch (err) {
+    case non_compacted_candidate_creation_error::no_segment_for_begin_offset:
+        return os << "no segment for begin offset";
+    case non_compacted_candidate_creation_error::missing_ntp_config:
+        return os << "missing config for NTP";
+    case non_compacted_candidate_creation_error::failed_to_get_file_range:
+        return os << "failed to get file range for candidate";
+    case non_compacted_candidate_creation_error::zero_content_length:
+        return os << "candidate has no content";
+    }
+}
+
+std::ostream&
+operator<<(std::ostream& os, const candidate_creation_error& err) {
+    ss::visit(err, [&os](auto err) { os << err; });
+    return os;
+}
+
+ss::log_level log_level_for_error(const candidate_creation_error& error) {
+    return ss::visit(
+      error,
+      [](compacted_candidate_creation_error err) {
+          switch (err) {
+          case compacted_candidate_creation_error::offset_inside_batch:
+              return ss::log_level::warn;
+          case compacted_candidate_creation_error::no_segments:
+              [[fallthrough]];
+          case compacted_candidate_creation_error::begin_offset_seek_error:
+              [[fallthrough]];
+          case compacted_candidate_creation_error::end_offset_seek_error:
+              [[fallthrough]];
+          case compacted_candidate_creation_error::upload_size_unchanged:
+              [[fallthrough]];
+          case compacted_candidate_creation_error::
+            cannot_replace_manifest_entry:
+              return ss::log_level::debug;
+          }
+      },
+      [](non_compacted_candidate_creation_error err) {
+          switch (err) {
+          case non_compacted_candidate_creation_error::missing_ntp_config:
+              return ss::log_level::warn;
+          case non_compacted_candidate_creation_error::
+            no_segment_for_begin_offset:
+              [[fallthrough]];
+          case non_compacted_candidate_creation_error::failed_to_get_file_range:
+              [[fallthrough]];
+          case non_compacted_candidate_creation_error::zero_content_length:
+              return ss::log_level::debug;
+          }
+      });
+}
+
+std::ostream&
+operator<<(std::ostream& os, const skip_offset_range& skip_range) {
+    fmt::print(
+      os,
+      "skip_offset_range{{begin: {}, end: {},error: {}}}",
+      skip_range.begin,
+      skip_range.end,
+      skip_range.error);
+    return os;
+}
+
 archival_policy::archival_policy(
   model::ntp ntp,
   std::optional<segment_time_limit> limit,
