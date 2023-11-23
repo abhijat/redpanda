@@ -196,4 +196,16 @@ std::ostream& operator<<(std::ostream& os, const adjacent_segment_run& run) {
     return os;
 }
 
+std::ostream& operator<<(std::ostream& os, segment_upload_kind upload_kind) {
+    switch (upload_kind) {
+    case segment_upload_kind::non_compacted:
+        fmt::print(os, "non-compacted");
+        break;
+    case segment_upload_kind::compacted:
+        fmt::print(os, "compacted");
+        break;
+    }
+    return os;
+}
+
 } // namespace archival

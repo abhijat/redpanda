@@ -1448,6 +1448,7 @@ static ss::future<ntp_archiver_upload_result> aggregate_upload_results(
     });
 }
 
+template<segment_upload_kind upload_kind>
 ss::future<ntp_archiver::scheduled_upload>
 ntp_archiver::schedule_single_upload(const upload_context& upload_ctx) {
     auto start_upload_offset = upload_ctx.start_offset;
@@ -1455,24 +1456,16 @@ ntp_archiver::schedule_single_upload(const upload_context& upload_ctx) {
 
     auto log = _parent.log();
 
-    candidate_creation_result creation_result;
-    switch (upload_ctx.upload_kind) {
-    case segment_upload_kind::non_compacted:
-        creation_result = co_await _policy.get_next_candidate(
-          start_upload_offset,
-          last_stable_offset,
-          log,
-          *_parent.get_offset_translator_state(),
-          _conf->segment_upload_timeout);
-        break;
-    case segment_upload_kind::compacted:
-        const auto& m = manifest();
-        creation_result = co_await _policy.get_next_compacted_segment(
-          start_upload_offset, log, m, _conf->segment_upload_timeout);
-        break;
-    }
+    const auto& m = manifest();
+    auto creation_result = co_await _policy.next_upload_candidate<upload_kind>(
+      start_upload_offset,
+      last_stable_offset,
+      log,
+      *_parent.get_offset_translator_state(),
+      m,
+      _conf->segment_upload_timeout);
 
-    if (const auto* error = std::get_if<candidate_creation_error>(
+    if (const auto* error = std::get_if<error_for_upload_kind_t<upload_kind>>(
           &creation_result);
         error) {
         const auto log_level = log_level_for_error(*error);
@@ -1491,7 +1484,7 @@ ntp_archiver::schedule_single_upload(const upload_context& upload_ctx) {
         };
     }
 
-    if (const auto* skip_offsets = std::get_if<skip_offset_range>(
+    if (const auto* skip_offsets = std::get_if<skip_offset_range<upload_kind>>(
           &creation_result);
         skip_offsets) {
         const auto log_level = log_level_for_error(skip_offsets->error);
@@ -1678,10 +1671,23 @@ ntp_archiver::schedule_uploads(std::vector<upload_context> loop_contexts) {
         std::exception_ptr ep;
         try {
             while (uploads_remaining > 0 && may_begin_uploads()) {
-                auto scheduled = co_await schedule_single_upload(ctx);
-                ctx.start_offset = model::next_offset(
-                  scheduled.inclusive_last_offset);
-                scheduled_uploads.push_back(std::move(scheduled));
+                switch (ctx.upload_kind) {
+                case segment_upload_kind::compacted: {
+                    auto scheduled = co_await schedule_single_upload<
+                      segment_upload_kind::compacted>(ctx);
+                    ctx.start_offset = model::next_offset(
+                      scheduled.inclusive_last_offset);
+                    scheduled_uploads.push_back(std::move(scheduled));
+                } break;
+                case segment_upload_kind::non_compacted: {
+                    auto scheduled = co_await schedule_single_upload<
+                      segment_upload_kind::non_compacted>(ctx);
+                    ctx.start_offset = model::next_offset(
+                      scheduled.inclusive_last_offset);
+                    scheduled_uploads.push_back(std::move(scheduled));
+                } break;
+                }
+
                 const auto& latest_scheduled = scheduled_uploads.back();
                 if (latest_scheduled.stop == ss::stop_iteration::yes) {
                     break;
@@ -2120,18 +2126,6 @@ ntp_archiver::maybe_truncate_manifest() {
           "archival metadata cleanup completed, nothing to clean up");
     }
     co_return result;
-}
-
-std::ostream& operator<<(std::ostream& os, segment_upload_kind upload_kind) {
-    switch (upload_kind) {
-    case segment_upload_kind::non_compacted:
-        fmt::print(os, "non-compacted");
-        break;
-    case segment_upload_kind::compacted:
-        fmt::print(os, "compacted");
-        break;
-    }
-    return os;
 }
 
 ss::future<> ntp_archiver::housekeeping() {

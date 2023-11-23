@@ -200,4 +200,8 @@ struct adjacent_segment_run {
 
 std::ostream& operator<<(std::ostream& o, const adjacent_segment_run& run);
 
+enum class segment_upload_kind { compacted, non_compacted };
+
+std::ostream& operator<<(std::ostream& os, segment_upload_kind upload_kind);
+
 } // namespace archival

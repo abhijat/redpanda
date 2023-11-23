@@ -416,7 +416,8 @@ void segment_collector::align_begin_offset_to_manifest() {
     }
 }
 
-ss::future<candidate_creation_result> segment_collector::make_upload_candidate(
+ss::future<compacted_candidate_creation_result>
+segment_collector::make_upload_candidate(
   ss::io_priority_class io_priority_class,
   ss::lowres_clock::duration segment_lock_duration) {
     if (_segments.empty()) {
@@ -490,7 +491,7 @@ ss::future<candidate_creation_result> segment_collector::make_upload_candidate(
           _end_inclusive,
           tail_seek.offset_inside_batch,
           tail_seek.offset);
-        co_return skip_offset_range{
+        co_return skip_offset_range<segment_upload_kind::compacted>{
           .begin = _begin_inclusive,
           .end = _end_inclusive,
           .error = compacted_candidate_creation_error::offset_inside_batch};
@@ -545,7 +546,7 @@ ss::future<candidate_creation_result> segment_collector::make_upload_candidate(
               "not decreased as a result of self-compaction: {}",
               _segments.front());
 
-            co_return skip_offset_range{
+            co_return skip_offset_range<segment_upload_kind::compacted>{
               .begin = _begin_inclusive,
               .end = _end_inclusive,
               .error

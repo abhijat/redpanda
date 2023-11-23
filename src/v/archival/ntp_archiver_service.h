@@ -42,10 +42,6 @@ class archival_fixture;
 
 using namespace std::chrono_literals;
 
-enum class segment_upload_kind { compacted, non_compacted };
-
-std::ostream& operator<<(std::ostream& os, segment_upload_kind upload_kind);
-
 class ntp_archiver_upload_result {
 public:
     ntp_archiver_upload_result() = default;
@@ -419,6 +415,7 @@ private:
     };
 
     /// Start upload without waiting for it to complete
+    template<segment_upload_kind upload_kind>
     ss::future<scheduled_upload>
     schedule_single_upload(const upload_context& upload_ctx);
 

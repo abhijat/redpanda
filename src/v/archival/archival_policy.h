@@ -43,6 +43,22 @@ enum class non_compacted_candidate_creation_error {
 
 std::ostream& operator<<(std::ostream&, non_compacted_candidate_creation_error);
 
+template<segment_upload_kind upload_kind>
+struct error_for_upload_kind;
+
+template<>
+struct error_for_upload_kind<segment_upload_kind::compacted> {
+    using type = compacted_candidate_creation_error;
+};
+
+template<>
+struct error_for_upload_kind<segment_upload_kind::non_compacted> {
+    using type = non_compacted_candidate_creation_error;
+};
+
+template<auto upload_kind>
+using error_for_upload_kind_t = error_for_upload_kind<upload_kind>::type;
+
 using candidate_creation_error = std::variant<
   compacted_candidate_creation_error,
   non_compacted_candidate_creation_error>;
@@ -74,18 +90,36 @@ struct upload_candidate_with_locks {
 
 /// Wraps an error with an offset range, so that no
 /// further upload candidates are created from this offset range.
+template<auto upload_kind>
 struct skip_offset_range {
     model::offset begin;
     model::offset end;
-    candidate_creation_error error;
+    error_for_upload_kind_t<upload_kind> error;
 
-    friend std::ostream& operator<<(std::ostream&, const skip_offset_range&);
+    friend std::ostream&
+    operator<<(std::ostream& os, const skip_offset_range& skip_range) {
+        fmt::print(
+          os,
+          "skip_offset_range{{begin: {}, end: {},error: {}}}",
+          skip_range.begin,
+          skip_range.end,
+          skip_range.error);
+        return os;
+    }
 };
 
+template<segment_upload_kind upload_kind>
 using candidate_creation_result = std::variant<
   upload_candidate_with_locks,
-  skip_offset_range,
-  candidate_creation_error>;
+  skip_offset_range<upload_kind>,
+  error_for_upload_kind_t<upload_kind>,
+  std::monostate>;
+
+using compacted_candidate_creation_result
+  = candidate_creation_result<segment_upload_kind::compacted>;
+
+using non_compacted_candidate_creation_result
+  = candidate_creation_result<segment_upload_kind::non_compacted>;
 
 /// Archival policy is responsible for extracting segments from
 /// log_manager in right order.
@@ -105,20 +139,42 @@ public:
     /// \param end_exclusive is an exclusive end of the range
     /// \param lm is a log manager
     /// \return initializd struct on success, empty struct on failure
-    ss::future<candidate_creation_result> get_next_candidate(
+    ss::future<non_compacted_candidate_creation_result> get_next_candidate(
       model::offset begin_inclusive,
       model::offset end_exclusive,
       ss::shared_ptr<storage::log>,
       const storage::offset_translator_state&,
       ss::lowres_clock::duration segment_lock_duration);
 
-    ss::future<candidate_creation_result> get_next_compacted_segment(
+    ss::future<compacted_candidate_creation_result> get_next_compacted_segment(
       model::offset begin_inclusive,
       ss::shared_ptr<storage::log> log,
       const cloud_storage::partition_manifest& manifest,
       ss::lowres_clock::duration segment_lock_duration);
 
     static bool eligible_for_compacted_reupload(const storage::segment&);
+
+    template<segment_upload_kind upload_kind>
+    ss::future<candidate_creation_result<upload_kind>> next_upload_candidate(
+      model::offset begin_inclusive,
+      model::offset end_exclusive,
+      ss::shared_ptr<storage::log> log,
+      const storage::offset_translator_state& ot_state,
+      const cloud_storage::partition_manifest& manifest,
+      ss::lowres_clock::duration segment_lock_duration) {
+        switch (upload_kind) {
+        case segment_upload_kind::compacted:
+            co_return co_await get_next_compacted_segment(
+              begin_inclusive, log, manifest, segment_lock_duration);
+        case segment_upload_kind::non_compacted:
+            co_return co_await get_next_candidate(
+              begin_inclusive,
+              end_exclusive,
+              log,
+              ot_state,
+              segment_lock_duration);
+        }
+    }
 
 private:
     /// Check if the upload have to be forced due to timeout

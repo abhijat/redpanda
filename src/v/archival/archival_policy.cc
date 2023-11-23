@@ -162,17 +162,6 @@ ss::log_level log_level_for_error(const candidate_creation_error& error) {
       });
 }
 
-std::ostream&
-operator<<(std::ostream& os, const skip_offset_range& skip_range) {
-    fmt::print(
-      os,
-      "skip_offset_range{{begin: {}, end: {},error: {}}}",
-      skip_range.begin,
-      skip_range.end,
-      skip_range.error);
-    return os;
-}
-
 archival_policy::archival_policy(
   model::ntp ntp,
   std::optional<segment_time_limit> limit,
@@ -403,7 +392,8 @@ static ss::future<std::optional<std::error_code>> get_file_range(
 ///       a name '1000-1-v1.log'. If we were only able to find offset
 ///       990 instead of 1000, we will upload starting from it and
 ///       the name will be '990-1-v1.log'.
-static ss::future<candidate_creation_result> create_upload_candidate(
+static ss::future<non_compacted_candidate_creation_result>
+create_upload_candidate(
   model::offset begin_inclusive,
   std::optional<model::offset> end_inclusive,
   ss::lw_shared_ptr<storage::segment> segment,
@@ -463,7 +453,8 @@ static ss::future<candidate_creation_result> create_upload_candidate(
     co_return upload_candidate_with_locks{*result, std::move(locks)};
 }
 
-ss::future<candidate_creation_result> archival_policy::get_next_candidate(
+ss::future<non_compacted_candidate_creation_result>
+archival_policy::get_next_candidate(
   model::offset begin_inclusive,
   model::offset end_exclusive,
   ss::shared_ptr<storage::log> log,
@@ -509,7 +500,7 @@ ss::future<candidate_creation_result> archival_policy::get_next_candidate(
     co_return upload;
 }
 
-ss::future<candidate_creation_result>
+ss::future<compacted_candidate_creation_result>
 archival_policy::get_next_compacted_segment(
   model::offset begin_inclusive,
   ss::shared_ptr<storage::log> log,

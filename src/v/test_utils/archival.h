@@ -102,40 +102,36 @@ inline void populate_manifest(
     }
 }
 
-inline archival::upload_candidate_with_locks
-require_upload_candidate(archival::candidate_creation_result&& r) {
+template<archival::segment_upload_kind upload_kind>
+archival::upload_candidate_with_locks
+require_upload_candidate(archival::candidate_creation_result<upload_kind>&& r) {
     ss::visit(
       r,
-      [](const archival::candidate_creation_error& err) {
+      [](const archival::error_for_upload_kind_t<upload_kind>& err) {
           BOOST_FAIL(fmt::format("unexpected creation error: {}", err));
       },
-      [](const archival::skip_offset_range& r) {
+      [](const archival::skip_offset_range<upload_kind>& r) {
           BOOST_FAIL(fmt::format("unexpected skip offset range: {}", r.error));
       },
-      [](const archival::upload_candidate_with_locks& c) {});
+      [](const archival::upload_candidate_with_locks&) {});
     return std::move(std::get<archival::upload_candidate_with_locks>(r));
 }
 
-template<typename Err>
-inline void
-require_error_kind(archival::candidate_creation_error actual, Err expected) {
-    ss::visit(
-      actual,
-      [expected](const Err& e) { BOOST_REQUIRE_EQUAL(e, expected); },
-      [](const auto& e) {
-          BOOST_FAIL(fmt::format("unexpected error kind: {}", e));
-      });
+template<typename Err, archival::segment_upload_kind upload_kind>
+void require_error_kind(
+  archival::error_for_upload_kind<upload_kind> actual, Err expected) {
+    BOOST_REQUIRE_EQUAL(actual, expected);
 }
 
-template<typename Err>
-inline void require_candidate_creation_error(
-  archival::candidate_creation_result&& r, Err expected) {
+template<typename Err, archival::segment_upload_kind upload_kind>
+void require_candidate_creation_error(
+  archival::candidate_creation_result<upload_kind>&& r, Err expected) {
     ss::visit(
       r,
-      [expected](const archival::candidate_creation_error& actual) {
+      [expected](const archival::error_for_upload_kind<upload_kind>& actual) {
           require_error_kind(actual, expected);
       },
-      [](const archival::skip_offset_range& r) {
+      [](const archival::skip_offset_range<upload_kind>& r) {
           BOOST_FAIL(fmt::format("unexpected skip offset range: {}", r));
       },
       [](const archival::upload_candidate_with_locks&) {
@@ -143,15 +139,17 @@ inline void require_candidate_creation_error(
       });
 }
 
-template<typename Err>
-inline void require_skip_offset(
-  archival::candidate_creation_result&& r, Err expected, model::offset final) {
+template<typename Err, archival::segment_upload_kind upload_kind>
+void require_skip_offset(
+  archival::candidate_creation_result<upload_kind>&& r,
+  Err expected,
+  model::offset final) {
     ss::visit(
       r,
       [](const archival::candidate_creation_error& err) {
           BOOST_FAIL(fmt::format("unexpected creation error: {}", err));
       },
-      [expected, final](const archival::skip_offset_range& r) {
+      [expected, final](const archival::skip_offset_range<upload_kind>& r) {
           require_error_kind(r.error, expected);
           BOOST_REQUIRE_EQUAL(r.end, final);
       },
