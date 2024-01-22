@@ -331,10 +331,12 @@ class S3Client:
     def _copy_single_object(self, bucket, src, dst):
         """Copy object to another location within the bucket"""
         try:
-            src_uri = f"{bucket}/{src}"
             return self._cli.copy_object(Bucket=bucket,
                                          Key=dst,
-                                         CopySource=src_uri)
+                                         CopySource={
+                                             'Bucket': bucket,
+                                             'Key': src,
+                                         })
         except ClientError as err:
             self.logger.debug(f"error response copying {bucket}/{src}: {err}")
             if err.response['Error']['Code'] == 'SlowDown':
